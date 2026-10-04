@@ -1,9 +1,11 @@
-// While a clear is running, Reaper Improved AI's combat changes are held
-// off for that group. They run again when the clear ends. A wedge Reaper
-// put on the group is put back, and the morale fire rate is applied again.
+// While a clear or garrison is running, Reaper Improved AI's combat changes
+// are held off for that group. They run again when the last such order ends.
+// A wedge Reaper put on the group is put back, and the morale fire rate is
+// applied again.
 
 class KKREAPER_ClearState
 {
+	int m_iDepth;
 	bool m_bHeldFormation;
 	bool m_bGroupWasWedge;
 	string m_sGroupFormation;
@@ -55,10 +57,18 @@ class KKREAPER_ClearGate
 
 	static bool Begin(SCR_AIGroup group)
 	{
-		if (!group || !Replication.IsServer() || IsGroup(group))
-			return IsGroup(group);
+		if (!group || !Replication.IsServer())
+			return false;
+
+		KKREAPER_ClearState existing = s_States.Get(group);
+		if (existing)
+		{
+			existing.m_iDepth++;
+			return true;
+		}
 
 		KKREAPER_ClearState state = new KKREAPER_ClearState();
+		state.m_iDepth = 1;
 		s_States.Set(group, state);
 		HoldFormation(group, state);
 		ReleaseNewSoldiers(group, state);
@@ -67,7 +77,8 @@ class KKREAPER_ClearGate
 		if (utility)
 			utility.KKREAPER_OnClearBegan();
 
-		PrintFormat("KKREAPER: Paused Reaper Improved AI for %1", group);
+		if (SCR_BaseGameMode.KK_LogEnabled())
+			PrintFormat("KKREAPER: Paused Reaper Improved AI for %1", group);
 		return true;
 	}
 
@@ -80,6 +91,10 @@ class KKREAPER_ClearGate
 		if (!state)
 			return;
 
+		state.m_iDepth--;
+		if (state.m_iDepth > 0)
+			return;
+
 		RestoreFormation(group, state);
 		s_States.Remove(group);
 
@@ -87,7 +102,8 @@ class KKREAPER_ClearGate
 		if (utility)
 			utility.KKREAPER_OnClearEnded();
 
-		PrintFormat("KKREAPER: Restored Reaper Improved AI for %1", group);
+		if (SCR_BaseGameMode.KK_LogEnabled())
+			PrintFormat("KKREAPER: Restored Reaper Improved AI for %1", group);
 	}
 
 	static void CaptureLate(SCR_AIGroup group)
@@ -212,13 +228,14 @@ class KKREAPER_ClearGate
 		AIGroupMovementComponent movement = AIGroupMovementComponent.Cast(
 			group.FindComponent(AIGroupMovementComponent)
 		);
-		if (!formationComponent)
-			return;
 
-		if (state.m_bGroupWasWedge)
-			formationComponent.SetFormation(WEDGE);
-		else if (state.m_sGroupFormation != string.Empty)
-			formationComponent.SetFormation(state.m_sGroupFormation);
+		if (formationComponent)
+		{
+			if (state.m_bGroupWasWedge)
+				formationComponent.SetFormation(WEDGE);
+			else if (state.m_sGroupFormation != string.Empty)
+				formationComponent.SetFormation(state.m_sGroupFormation);
+		}
 
 		if (!movement)
 			return;
@@ -243,8 +260,8 @@ class KKREAPER_ClearGate
 
 modded class REAPER_AI_PlayerCommandPriority
 {
-	// A clear keeps the player's route. Reaper's own checks stand down for
-	// that group, and come back when the clear ends.
+	// A clear or garrison keeps the player's route. Reaper's own checks stand
+	// down for that group, and come back when the order ends.
 	override static bool REAPER_AI_ShouldPreservePlayerMovement(AIAgent agent)
 	{
 		if (KKREAPER_ClearGate.Affects(agent))
@@ -725,18 +742,97 @@ modded class KK_ClearBuildingActivity
 		KKREAPER_TryResume();
 	}
 
+	override void OnActionRemoved()
+	{
+		super.OnActionRemoved();
+		KKREAPER_TryResume();
+	}
+
+	override void Supersede()
+	{
+		super.Supersede();
+		KKREAPER_TryResume();
+	}
+
 	protected void KKREAPER_TrySuspend()
 	{
-		if (m_bKKREAPER_Suspended || m_bFinished || m_bCancelled || !m_ClearWaypoint)
+		if (m_bKKREAPER_Suspended || !IsLive())
 			return;
 
 		if (KKREAPER_ClearGate.Begin(m_Group))
 			m_bKKREAPER_Suspended = true;
 	}
 
+	// A restart that keeps this same activity is not a cancel. Reaper stays
+	// paused until this clear is finished, cancelled, or replaced.
 	protected void KKREAPER_TryResume()
 	{
-		if (!m_bKKREAPER_Suspended)
+		if (!m_bKKREAPER_Suspended || IsLive())
+			return;
+
+		m_bKKREAPER_Suspended = false;
+		KKREAPER_ClearGate.End(m_Group);
+	}
+}
+
+modded class KK_GarrisonBuildingActivity
+{
+	protected bool m_bKKREAPER_Suspended;
+
+	override void OnActionSelected()
+	{
+		super.OnActionSelected();
+		KKREAPER_TrySuspend();
+	}
+
+	override float CustomEvaluate()
+	{
+		float score = super.CustomEvaluate();
+
+		if (m_bKKREAPER_Suspended)
+			KKREAPER_ClearGate.CaptureLate(m_Group);
+
+		return score;
+	}
+
+	override void OnActionDeselected()
+	{
+		super.OnActionDeselected();
+		KKREAPER_TryResume();
+	}
+
+	override void OnActionFailed()
+	{
+		super.OnActionFailed();
+		KKREAPER_TryResume();
+	}
+
+	override void OnActionRemoved()
+	{
+		super.OnActionRemoved();
+		KKREAPER_TryResume();
+	}
+
+	override void Supersede()
+	{
+		super.Supersede();
+		KKREAPER_TryResume();
+	}
+
+	protected void KKREAPER_TrySuspend()
+	{
+		if (m_bKKREAPER_Suspended || !IsLive())
+			return;
+
+		if (KKREAPER_ClearGate.Begin(m_Group))
+			m_bKKREAPER_Suspended = true;
+	}
+
+	// A restart that keeps this same activity is not a cancel. Reaper stays
+	// paused until this garrison is finished, cancelled, or replaced.
+	protected void KKREAPER_TryResume()
+	{
+		if (!m_bKKREAPER_Suspended || IsLive())
 			return;
 
 		m_bKKREAPER_Suspended = false;
@@ -759,7 +855,7 @@ modded class SCR_AICombatComponent
 		}
 
 		// Reaper replaces recognition while threatened and does not call
-		// through. A clear keeps Koopky's factor instead.
+		// through. The building order keeps Koopky's factor instead.
 		if (owner && KK_GarrisonHold.IsIgnoringTargets(owner))
 		{
 			if (perceptionComp)
