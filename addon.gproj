@@ -1,0 +1,8 @@
+GameProject {
+ ID "KoopkyCQBReaperCompatibility"
+ GUID "6A8805388113FD06"
+ TITLE "KoopkyCQB_Reaper_Compatibility"
+ Dependencies {
+  "6A66985683746B39" "6A5D2DE1B3F96D7F" "58D0FB3206B6F859"
+ }
+}
