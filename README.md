@@ -1,12 +1,12 @@
 # Koopky CQB Reaper Compatibility
 
-Keeps a Clear or Garrison order in charge of movement when REAPER Improved AI is also loaded. Requires Koopky CQB and REAPER Improved AI.
+Keeps a Clear, Garrison, or Take cover order in charge of movement when REAPER Improved AI is also loaded. Requires Koopky CQB and REAPER Improved AI.
 
 Use this addon instead of Koopky CQB CRX Compatibility. The two AI mods are not meant to be loaded together, and each compatibility patch only wraps one of them.
 
 ## What it changes
 
-While a Clear or a Garrison is running, Reaper's combat changes are held off for that squad. They are put back when that order is finished or cancelled. A restart that keeps the same order does not put them back. A finished clear puts them back, and a garrison that follows pauses them again when that garrison starts.
+While a Clear, a Garrison, or a Take cover is running, Reaper's combat changes are held off for that squad. They are put back when that order is finished or cancelled. A restart that keeps the same order does not put them back. During a Take cover push, or a walk back to the point, Reaper's combat move is cancelled as well. The bounding pair keeps Koopky's sprint. Reaper does not turn that run into a look at the target and a sideways step. A take cover jog still fires: that shot is Koopky's, and the rifle-up check lets it through. Once the squad is at the point and Take cover uses attack is on, that move is allowed again so normal attack can fight from there. Reaper's other changes stay off. Advance and Bound do not pause Reaper, because those orders hand the fight back to normal combat. A finished clear puts Reaper back, and a garrison or take cover that follows pauses it again when that order starts.
 
 Held off for that order:
 

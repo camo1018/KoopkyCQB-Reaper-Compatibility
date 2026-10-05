@@ -1,13 +1,14 @@
-// While a clear or garrison is running, Reaper Improved AI's combat changes
-// are held off for that group. They run again when the last such order ends.
-// A wedge Reaper put on the group is put back, and the morale fire rate is
-// applied again.
+// While a clear, garrison, or take cover order is running, Reaper Improved AI's
+// combat changes are held off for that group. They run again when the last
+// such order on that group ends. A wedge Reaper put on the group is put back,
+// and the morale fire rate is applied again.
 
 class KKREAPER_ClearState
 {
 	int m_iDepth;
 	bool m_bHeldFormation;
 	bool m_bGroupWasWedge;
+	bool m_bMoveLocked;
 	string m_sGroupFormation;
 	ref array<int> m_aWedgeHandlers = new array<int>();
 	ref set<AIAgent> m_aReleased = new set<AIAgent>();
@@ -53,6 +54,37 @@ class KKREAPER_ClearGate
 			return false;
 
 		return Affects(control.GetAIAgent());
+	}
+
+	static bool MoveLocked(AIAgent agent)
+	{
+		if (!agent)
+			return false;
+
+		SCR_AIGroup group = SCR_AIGroup.Cast(agent);
+		if (!group)
+			group = SCR_AIGroup.Cast(agent.GetParentGroup());
+
+		if (!group)
+			return false;
+
+		KKREAPER_ClearState state = s_States.Get(group);
+		return state && state.m_bMoveLocked;
+	}
+
+	// Take cover sets this while it still owns the route. The fight at the
+	// point clears it, so normal attack can move again. Clear and Garrison
+	// never set it.
+	static void SetMoveLocked(SCR_AIGroup group, bool locked)
+	{
+		if (!group)
+			return;
+
+		KKREAPER_ClearState state = s_States.Get(group);
+		if (!state)
+			return;
+
+		state.m_bMoveLocked = locked;
 	}
 
 	static bool Begin(SCR_AIGroup group)
@@ -260,8 +292,8 @@ class KKREAPER_ClearGate
 
 modded class REAPER_AI_PlayerCommandPriority
 {
-	// A clear or garrison keeps the player's route. Reaper's own checks stand
-	// down for that group, and come back when the order ends.
+	// A player command that should keep the route. Reaper stands down for that
+	// group, and comes back when the order ends.
 	override static bool REAPER_AI_ShouldPreservePlayerMovement(AIAgent agent)
 	{
 		if (KKREAPER_ClearGate.Affects(agent))
@@ -368,6 +400,52 @@ modded class SCR_AICombatMoveLogic_Attack
 
 	protected override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		IEntity body;
+		if (owner)
+			body = owner.GetControlledEntity();
+
+		// Bound does not pause Reaper. The sprint still has to stay a sprint.
+		// Reaper aims that step at the enemy and it becomes a sidestep.
+		if (KK_GarrisonHold.IsBoundSprint(body) || KK_GarrisonHold.IsBoundSprint(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			KKREAPER_KeepBoundSprint(owner);
+			return ENodeResult.RUNNING;
+		}
+
+		// One man running back does not pause Reaper for the men still
+		// fighting at the point. His own combat move stays off.
+		if (KK_GarrisonHold.IsRecalled(body) || KK_GarrisonHold.IsRecalled(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			KKREAPER_KeepRecall(owner);
+			return ENodeResult.RUNNING;
+		}
+
+		// The first man at the point turns Reaper back on for the group.
+		// A pair still planted on the way has to stay there.
+		if (KK_GarrisonHold.IsPinned(body) || KK_GarrisonHold.IsPinned(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			KKREAPER_HoldPinned(owner);
+			return ENodeResult.RUNNING;
+		}
+
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			KKREAPER_KeepBoundSprint(owner);
+			return ENodeResult.RUNNING;
+		}
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -392,6 +470,9 @@ modded class SCR_AICombatMoveLogic_Attack
 
 	protected override void PushRequestMove()
 	{
+		if (m_Utility && KKREAPER_ClearGate.MoveLocked(m_Utility.GetAIAgent()))
+			return;
+
 		if (KKREAPER_Clearing())
 		{
 			vanilla.PushRequestMove();
@@ -447,6 +528,9 @@ modded class SCR_AICalculateCoverQueryProps_CombatMove
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+			return ENodeResult.FAIL;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -458,6 +542,9 @@ modded class SCR_AIFindCover
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+			return ENodeResult.FAIL;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -469,6 +556,9 @@ modded class SCR_AIGetCoverParameters
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+			return ENodeResult.FAIL;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -491,6 +581,9 @@ modded class SCR_AIGetCombatMovementParameters
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+			return ENodeResult.FAIL;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -502,6 +595,9 @@ modded class SCR_AIGetCombatMoveRequestParameters_Move
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.MoveLocked(owner))
+			return ENodeResult.FAIL;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -840,6 +936,104 @@ modded class KK_GarrisonBuildingActivity
 	}
 }
 
+modded class KK_AttackActivity
+{
+	protected bool m_bKKREAPER_Suspended;
+
+	override void OnActionSelected()
+	{
+		super.OnActionSelected();
+		KKREAPER_TrySuspend();
+	}
+
+	override float CustomEvaluate()
+	{
+		float score = super.CustomEvaluate();
+		KKREAPER_SyncSuspend();
+		return score;
+	}
+
+	override void OnActionDeselected()
+	{
+		super.OnActionDeselected();
+		KKREAPER_TryResume();
+	}
+
+	override void OnActionFailed()
+	{
+		super.OnActionFailed();
+		KKREAPER_TryResume();
+	}
+
+	override void OnActionRemoved()
+	{
+		super.OnActionRemoved();
+		KKREAPER_TryResume();
+	}
+
+	override void Supersede()
+	{
+		super.Supersede();
+		KKREAPER_TryResume();
+	}
+
+	protected void KKREAPER_SyncSuspend()
+	{
+		// The fight at the point belongs to Reaper again. A push or a bound
+		// still holds Reaper off. One man running back does not.
+		if (!IsTakeCover() || KKREAPER_FightYielded())
+		{
+			KKREAPER_EndSuspend();
+			return;
+		}
+
+		if (!m_bKKREAPER_Suspended)
+			KKREAPER_TrySuspend();
+		else
+			KKREAPER_ClearGate.CaptureLate(m_Group);
+
+		if (m_bKKREAPER_Suspended)
+			KKREAPER_ClearGate.SetMoveLocked(m_Group, true);
+	}
+
+	// At the point, with "Take cover uses attack" on, each man is released
+	// when he gets there. Reaper runs for whoever is still on the point.
+	// A man walked back past the return distance is held on his own.
+	protected bool KKREAPER_FightYielded()
+	{
+		return ReleasedToFight();
+	}
+
+	protected void KKREAPER_TrySuspend()
+	{
+		if (m_bKKREAPER_Suspended || !IsLive() || !IsTakeCover())
+			return;
+
+		if (KKREAPER_ClearGate.Begin(m_Group))
+			m_bKKREAPER_Suspended = true;
+	}
+
+	// A restart that keeps this same activity is not a cancel. Reaper stays
+	// paused until this take cover is finished, cancelled, or replaced, or
+	// until the fight at the point is handed over.
+	protected void KKREAPER_TryResume()
+	{
+		if (IsLive())
+			return;
+
+		KKREAPER_EndSuspend();
+	}
+
+	protected void KKREAPER_EndSuspend()
+	{
+		if (!m_bKKREAPER_Suspended)
+			return;
+
+		m_bKKREAPER_Suspended = false;
+		KKREAPER_ClearGate.End(m_Group);
+	}
+}
+
 modded class SCR_AICombatComponent
 {
 	override void UpdatePerceptionFactor(
@@ -894,5 +1088,375 @@ modded class SCR_AICombatComponent
 		perceptionFactor *= m_fEquipmentPerceptionFactor;
 		perceptionFactor *= m_fPerceptionFactor;
 		perceptionComp.SetPerceptionFactor(perceptionFactor);
+	}
+
+	override void EvaluateWeaponAndTarget(
+		out bool outWeaponEvent,
+		out bool outSelectedTargetChanged,
+		out BaseTarget outPrevTarget,
+		out BaseTarget outCurrentTarget,
+		out bool outRetreatTargetChanged,
+		out bool outCompartmentChanged)
+	{
+		super.EvaluateWeaponAndTarget(
+			outWeaponEvent,
+			outSelectedTargetChanged,
+			outPrevTarget,
+			outCurrentTarget,
+			outRetreatTargetChanged,
+			outCompartmentChanged
+		);
+
+		// A cover hold stands against something solid. This order's sight
+		// trace hits that cover. Keep a living target the normal attack
+		// can still see when Reaper's own pass does not.
+		IEntity owner = GetOwner();
+		if (!owner || !KK_GarrisonHold.IsPinned(owner) || !KK_GarrisonHold.IsFreshOrder(owner))
+			return;
+
+		if (!m_SelectedTarget || !KK_GarrisonHold.IsLivingTarget(m_SelectedTarget))
+			return;
+
+		KK_GarrisonHold.EndFreshOrder(owner);
+	}
+}
+
+// The bound runner has to keep the sprint Koopky issued. Reaper aims that
+// step at the enemy, and the sprint becomes a sidestep. Lowering the rifle
+// again, or cancelling the look at the route, stops the step instead.
+void KKREAPER_KeepBoundSprint(IEntity soldier)
+{
+	if (!KK_GarrisonHold.IsBoundSprint(soldier))
+		return;
+
+	IEntity body = soldier;
+	AIAgent agent = AIAgent.Cast(soldier);
+	if (agent)
+		body = agent.GetControlledEntity();
+
+	if (!body)
+		body = soldier;
+
+	CharacterControllerComponent controller = CharacterControllerComponent.Cast(
+		body.FindComponent(CharacterControllerComponent)
+	);
+	if (controller && (controller.IsWeaponRaised() || controller.IsWeaponADS()))
+	{
+		controller.SetWeaponADS(false);
+		controller.SetWeaponRaised(false);
+	}
+
+	AICharacterMovementComponent movement = AICharacterMovementComponent.Cast(
+		body.FindComponent(AICharacterMovementComponent)
+	);
+	if (movement)
+		movement.SetMovementTypeWanted(EMovementType.SPRINT);
+
+	SCR_AIUtilityComponent utility = SCR_AIUtilityComponent.Cast(
+		body.FindComponent(SCR_AIUtilityComponent)
+	);
+	if (!utility && agent)
+	{
+		utility = SCR_AIUtilityComponent.Cast(
+			agent.FindComponent(SCR_AIUtilityComponent)
+		);
+	}
+
+	if (!utility || !utility.m_CombatMoveState)
+		return;
+
+	utility.m_CombatMoveState.m_bAimAtTarget = false;
+}
+
+// A soldier who has stopped to shoot is pinned. Reaper still aims the move
+// that was just cancelled, and that aim turns the stop into a sidestep.
+void KKREAPER_HoldPinned(IEntity soldier)
+{
+	if (!KK_GarrisonHold.IsPinned(soldier))
+		return;
+
+	IEntity body = soldier;
+	AIAgent agent = AIAgent.Cast(soldier);
+	if (agent)
+		body = agent.GetControlledEntity();
+
+	if (!body)
+		body = soldier;
+
+	AICharacterMovementComponent movement = AICharacterMovementComponent.Cast(
+		body.FindComponent(AICharacterMovementComponent)
+	);
+	if (movement)
+		movement.SetMovementTypeWanted(EMovementType.IDLE);
+
+	SCR_AIUtilityComponent utility = SCR_AIUtilityComponent.Cast(
+		body.FindComponent(SCR_AIUtilityComponent)
+	);
+	if (!utility && agent)
+	{
+		utility = SCR_AIUtilityComponent.Cast(
+			agent.FindComponent(SCR_AIUtilityComponent)
+		);
+	}
+
+	if (!utility || !utility.m_CombatMoveState)
+		return;
+
+	utility.m_CombatMoveState.m_bAimAtTarget = false;
+}
+
+// A man walked back to the point keeps that run. Reaper is still on for
+// the others, and aiming this step at the enemy turns it into a sidestep.
+void KKREAPER_KeepRecall(IEntity soldier)
+{
+	if (!KK_GarrisonHold.IsRecalled(soldier))
+		return;
+
+	IEntity body = soldier;
+	AIAgent agent = AIAgent.Cast(soldier);
+	if (agent)
+		body = agent.GetControlledEntity();
+
+	if (!body)
+		body = soldier;
+
+	AICharacterMovementComponent movement = AICharacterMovementComponent.Cast(
+		body.FindComponent(AICharacterMovementComponent)
+	);
+	if (movement)
+		movement.SetMovementTypeWanted(EMovementType.RUN);
+
+	SCR_AIUtilityComponent utility = SCR_AIUtilityComponent.Cast(
+		body.FindComponent(SCR_AIUtilityComponent)
+	);
+	if (!utility && agent)
+	{
+		utility = SCR_AIUtilityComponent.Cast(
+			agent.FindComponent(SCR_AIUtilityComponent)
+		);
+	}
+
+	if (!utility || !utility.m_CombatMoveState)
+		return;
+
+	utility.m_CombatMoveState.m_bAimAtTarget = false;
+}
+
+modded class SCR_AIMoveIndividuallyBehavior
+{
+	override float CustomEvaluate()
+	{
+		float score;
+		IEntity body;
+		if (m_Utility)
+			body = m_Utility.m_OwnerEntity;
+
+		bool sprinting = KK_GarrisonHold.IsBoundSprint(body);
+		bool planted = KK_GarrisonHold.IsPinned(body);
+		bool recalled = KK_GarrisonHold.IsRecalled(body);
+		if (m_Utility)
+		{
+			sprinting = sprinting || KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner());
+			planted = planted || KK_GarrisonHold.IsPinned(m_Utility.GetOwner());
+			recalled = recalled || KK_GarrisonHold.IsRecalled(m_Utility.GetOwner());
+		}
+
+		// Reaper raises this move into a strafe. The bound sprint is Koopky's.
+		// A planted hold is too, and so is the run back to the point.
+		if (sprinting || planted || recalled)
+			score = vanilla.CustomEvaluate();
+		else
+			score = super.CustomEvaluate();
+
+		KKREAPER_KeepBoundSprint(body);
+		KKREAPER_HoldPinned(body);
+		KKREAPER_KeepRecall(body);
+		return score;
+	}
+}
+
+modded class SCR_AICharacterSetMovementSpeed
+{
+	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
+	{
+		IEntity body;
+		if (owner)
+			body = owner.GetControlledEntity();
+
+		ENodeResult result = super.EOnTaskSimulate(owner, dt);
+
+		// Reaper writes RUN onto a combat step after the order. An aimed
+		// bound was coming out as a sidestep. Put the sprint back after
+		// the tree has accepted the move.
+		if (KK_GarrisonHold.IsBoundSprint(body) || KK_GarrisonHold.IsBoundSprint(owner))
+		{
+			KKREAPER_KeepBoundSprint(body);
+			return result;
+		}
+
+		if (KK_GarrisonHold.IsRecalled(body) || KK_GarrisonHold.IsRecalled(owner))
+		{
+			KKREAPER_KeepRecall(body);
+			return result;
+		}
+
+		if (KK_GarrisonHold.IsPinned(body) || KK_GarrisonHold.IsPinned(owner))
+			KKREAPER_HoldPinned(body);
+
+		// This node is in the move that a take cover jog actually runs.
+		// The rifle-up node can belong to a tree Reaper no longer ticks.
+		if (
+			KK_GarrisonHold.IsMoveFire(body) ||
+			KK_GarrisonHold.IsMoveFire(owner) ||
+			KK_GarrisonHold.IsRoomFire(body) ||
+			KK_GarrisonHold.IsRoomFire(owner)
+		)
+		{
+			SCR_ChimeraAIAgent moving = SCR_ChimeraAIAgent.Cast(owner);
+			if (moving)
+				KK_GarrisonHold.ApplyMoveFire(moving.m_UtilityComponent);
+		}
+		else
+		{
+			IEntity soldier = body;
+			if (!soldier)
+				soldier = owner;
+
+			KK_GarrisonHold.KeepClearWeaponRaised(soldier);
+		}
+
+		return result;
+	}
+}
+
+modded class SCR_AILookAction
+{
+	override void LookAt(vector pos, float priority, float duration = 0.8)
+	{
+		// A look along the route still has to run, or the step never starts.
+		// Reaper turns that look toward the enemy, and the sprint becomes a strafe.
+		if (KKREAPER_BoundSprinting())
+		{
+			vanilla.LookAt(pos, priority, duration);
+			return;
+		}
+
+		super.LookAt(pos, priority, duration);
+	}
+
+	override void LookAt(IEntity ent, float priority, float duration = 0.8)
+	{
+		// Facing the enemy turns the sprint into a strafe. A look along
+		// the route still has to run, or the step never starts.
+		if (KKREAPER_BoundSprinting())
+			return;
+
+		super.LookAt(ent, priority, duration);
+	}
+
+	protected bool KKREAPER_BoundSprinting()
+	{
+		if (!m_Utility)
+			return false;
+
+		return KK_GarrisonHold.IsBoundSprint(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner()) ||
+			KK_GarrisonHold.IsRecalled(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsRecalled(m_Utility.GetOwner());
+	}
+}
+
+modded class SCR_AISetWeaponRaised
+{
+	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
+	{
+		IEntity body;
+		if (owner)
+			body = owner.GetControlledEntity();
+
+		if (KK_GarrisonHold.IsBoundSprint(body) || KK_GarrisonHold.IsBoundSprint(owner))
+		{
+			if (body)
+			{
+				CharacterControllerComponent controller =
+					CharacterControllerComponent.Cast(
+						body.FindComponent(CharacterControllerComponent)
+					);
+
+				// Sending the lower again restarts it and cuts the step off.
+				if (controller && (controller.IsWeaponRaised() || controller.IsWeaponADS()))
+				{
+					controller.SetWeaponADS(false);
+					controller.SetWeaponRaised(false);
+				}
+			}
+
+			return ENodeResult.SUCCESS;
+		}
+
+		IEntity soldier = body;
+		if (!soldier)
+			soldier = owner;
+
+		if (KK_GarrisonHold.IsIgnoringTargets(body) || KK_GarrisonHold.IsIgnoringTargets(owner))
+		{
+			if (body)
+			{
+				CharacterControllerComponent controller =
+					CharacterControllerComponent.Cast(
+						body.FindComponent(CharacterControllerComponent)
+					);
+
+				if (controller)
+					controller.SetWeaponRaised(false);
+			}
+
+			return ENodeResult.SUCCESS;
+		}
+
+		// Call the shot here. super reaches Reaper's node when that addon
+		// loads after Koopky, and that node does not run Koopky's trigger.
+		if (KK_GarrisonHold.OwnsShot(body) || KK_GarrisonHold.OwnsShot(owner))
+		{
+			SCR_ChimeraAIAgent roomSoldier = SCR_ChimeraAIAgent.Cast(owner);
+			if (roomSoldier)
+				KK_GarrisonHold.ApplyRoomShot(roomSoldier.m_UtilityComponent);
+
+			KK_GarrisonHold.KeepClearWeaponRaised(soldier);
+			return ENodeResult.SUCCESS;
+		}
+
+		if (
+			KK_GarrisonHold.IsMoveFire(body) ||
+			KK_GarrisonHold.IsMoveFire(owner) ||
+			KK_GarrisonHold.IsRoomFire(body) ||
+			KK_GarrisonHold.IsRoomFire(owner)
+		)
+		{
+			SCR_ChimeraAIAgent firing = SCR_ChimeraAIAgent.Cast(owner);
+			if (firing)
+				KK_GarrisonHold.ApplyMoveFire(firing.m_UtilityComponent);
+
+			return ENodeResult.SUCCESS;
+		}
+
+		if (KK_GarrisonHold.IsQuietReload(body) || KK_GarrisonHold.IsQuietReload(owner))
+			return ENodeResult.SUCCESS;
+
+		if (
+			KK_GarrisonHold.SprintBeforeReload(body) ||
+			KK_GarrisonHold.SprintBeforeReload(owner) ||
+			KK_GarrisonHold.IsReloadBashing(body) ||
+			KK_GarrisonHold.IsReloadBashing(owner)
+		)
+		{
+			KK_GarrisonHold.LowerForReloadSprint(owner);
+			return ENodeResult.SUCCESS;
+		}
+
+		if (KK_GarrisonHold.KeepClearWeaponRaised(soldier))
+			return ENodeResult.SUCCESS;
+
+		return super.EOnTaskSimulate(owner, dt);
 	}
 }
