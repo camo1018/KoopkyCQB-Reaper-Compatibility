@@ -398,6 +398,18 @@ modded class SCR_AICombatMoveLogic_Attack
 		return m_Utility && KKREAPER_ClearGate.Affects(m_Utility.GetAIAgent());
 	}
 
+	protected bool KKREAPER_BoundSprint()
+	{
+		if (KK_GarrisonHold.IsBoundSprint(m_MyEntity))
+			return true;
+
+		if (!m_Utility)
+			return false;
+
+		return KK_GarrisonHold.IsBoundSprint(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner());
+	}
+
 	protected override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
 		IEntity body;
@@ -470,6 +482,11 @@ modded class SCR_AICombatMoveLogic_Attack
 
 	protected override void PushRequestMove()
 	{
+		// The bound is the sprint. A combat move from here is the strafe
+		// toward the enemy, and that strafe will not take a sprint.
+		if (KKREAPER_BoundSprint())
+			return;
+
 		if (m_Utility && KKREAPER_ClearGate.MoveLocked(m_Utility.GetAIAgent()))
 			return;
 
@@ -1107,6 +1124,25 @@ modded class SCR_AICombatComponent
 			outCompartmentChanged
 		);
 
+		// Reaper selects the enemy again after Koopky clears him. That
+		// selection aims the bound, and the aimed bound will not sprint.
+		// The enemy he already had is kept, and put back when the sprint ends.
+		IEntity sprinting = GetOwner();
+		if (sprinting && KK_GarrisonHold.IsBoundSprint(sprinting))
+		{
+			KK_GarrisonHold.RememberSprintEnemy(sprinting, m_SelectedTarget);
+			KK_ClearTarget();
+			m_SelectedTargetVisible = false;
+			outCurrentTarget = null;
+			outSelectedTargetChanged = false;
+			vector lane;
+			if (KK_GarrisonHold.GetSprintLook(sprinting, lane))
+				m_SelectedTargetDestinationPos = lane;
+			return;
+		}
+
+		KK_HoldSprintEnemy(outCurrentTarget);
+
 		// A cover hold stands against something solid. This order's sight
 		// trace hits that cover. Keep a living target the normal attack
 		// can still see when Reaper's own pass does not.
@@ -1268,6 +1304,11 @@ modded class SCR_AIMoveIndividuallyBehavior
 		else
 			score = super.CustomEvaluate();
 
+		// vanilla skips Koopky, so the combat-move flag has to be cleared
+		// here. Left on, this move strafes at the enemy instead of sprinting.
+		if (sprinting)
+			m_bUseCombatMove = false;
+
 		KKREAPER_KeepBoundSprint(body);
 		KKREAPER_HoldPinned(body);
 		KKREAPER_KeepRecall(body);
@@ -1333,9 +1374,15 @@ modded class SCR_AILookAction
 {
 	override void LookAt(vector pos, float priority, float duration = 0.8)
 	{
-		// A look along the route still has to run, or the step never starts.
-		// Reaper turns that look toward the enemy, and the sprint becomes a strafe.
-		if (KKREAPER_BoundSprinting())
+		// A look at the enemy, applied and then replaced by the lane, is
+		// the turn off the sprint and back. The lane is written by the
+		// look node. This call does not take it.
+		if (KKREAPER_Sprinting())
+			return;
+
+		// The walk back still needs a look along the route. Reaper would
+		// turn that look toward the enemy.
+		if (KKREAPER_Recalled())
 		{
 			vanilla.LookAt(pos, priority, duration);
 			return;
@@ -1346,23 +1393,155 @@ modded class SCR_AILookAction
 
 	override void LookAt(IEntity ent, float priority, float duration = 0.8)
 	{
-		// Facing the enemy turns the sprint into a strafe. A look along
-		// the route still has to run, or the step never starts.
-		if (KKREAPER_BoundSprinting())
+		// Facing the enemy turns the sprint into a strafe.
+		if (KKREAPER_Sprinting() || KKREAPER_Recalled())
 			return;
 
 		super.LookAt(ent, priority, duration);
 	}
 
-	protected bool KKREAPER_BoundSprinting()
+	// The behavior tree finishes a look on its own timer and Reaper then
+	// aims the head at the enemy. While he is sprinting, that finish is
+	// what swings him off the lane and back.
+	override void Complete()
+	{
+		if (KKREAPER_Sprinting() && m_fPriority >= SCR_AILookAction.PRIO_COMMANDER)
+			return;
+
+		super.Complete();
+	}
+
+	override void MoveLookParametersToNode(
+		out bool outCanLook,
+		out vector outLookPos,
+		out float outLookDuration,
+		out bool outCancelLook,
+		out bool outRestartLook)
+	{
+		// Reaper's own look runs in this call and points him at the enemy.
+		// The next pass points him down the lane. That pair of writes is
+		// the head thrash. While he is sprinting, this node does not
+		// enter Reaper, and the turn is started only once.
+		if (KKREAPER_Sprinting())
+		{
+			vector lane;
+			IEntity body;
+			if (m_Utility)
+				body = m_Utility.m_OwnerEntity;
+
+			bool haveLane = KK_GarrisonHold.GetSprintLook(body, lane);
+			if (!haveLane && m_Utility)
+				haveLane = KK_GarrisonHold.GetSprintLook(m_Utility.GetOwner(), lane);
+
+			m_bCancelLook = false;
+			m_bRestartLook = false;
+
+			if (!haveLane)
+			{
+				outCanLook = false;
+				outCancelLook = false;
+				outRestartLook = false;
+				outLookPos = vector.Zero;
+				outLookDuration = 0;
+				return;
+			}
+
+			bool restart = !m_bKKLaneHeld;
+			m_bKKLaneHeld = true;
+
+			outCanLook = true;
+			outCancelLook = false;
+			outRestartLook = restart;
+			outLookPos = lane;
+			outLookDuration = 8;
+			m_vPosition = lane;
+			m_fPriority = SCR_AILookAction.PRIO_COMMANDER;
+			m_fDuration = 8;
+			return;
+		}
+
+		m_bKKLaneHeld = false;
+		super.MoveLookParametersToNode(
+			outCanLook,
+			outLookPos,
+			outLookDuration,
+			outCancelLook,
+			outRestartLook
+		);
+	}
+
+	protected bool m_bKKLaneHeld;
+
+	protected bool KKREAPER_Sprinting()
 	{
 		if (!m_Utility)
 			return false;
 
 		return KK_GarrisonHold.IsBoundSprint(m_Utility.m_OwnerEntity) ||
-			KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner()) ||
-			KK_GarrisonHold.IsRecalled(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner());
+	}
+
+	protected bool KKREAPER_Recalled()
+	{
+		if (!m_Utility)
+			return false;
+
+		return KK_GarrisonHold.IsRecalled(m_Utility.m_OwnerEntity) ||
 			KK_GarrisonHold.IsRecalled(m_Utility.GetOwner());
+	}
+}
+
+// The attack aims the bound, and the aimed step walks. Reaper scores
+// that attack without calling through, so the zero has to land here.
+modded class SCR_AIAttackBehavior
+{
+	override float CustomEvaluate()
+	{
+		if (!m_Utility)
+			return super.CustomEvaluate();
+
+		if (
+			KK_GarrisonHold.IsBoundSprint(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner())
+		)
+		{
+			m_bUseCombatMove = false;
+			return 0;
+		}
+
+		return super.CustomEvaluate();
+	}
+}
+
+// Outermost, so Reaper cannot accept a combat move during the bound.
+// That request is the walk toward the enemy. The sprint is the order.
+modded class SCR_AICombatMoveState
+{
+	override void ApplyNewRequest(notnull SCR_AICombatMoveRequestBase request)
+	{
+		if (KK_GarrisonHold.IsSprintMoveLocked(this))
+		{
+			request.m_eState = SCR_EAICombatMoveRequestState.CANCELED;
+			if (m_Request && m_Request.m_eState == SCR_EAICombatMoveRequestState.EXECUTING)
+				m_Request.m_eState = SCR_EAICombatMoveRequestState.CANCELED;
+
+			m_Request = null;
+			m_bAimAtTarget = false;
+			return;
+		}
+
+		super.ApplyNewRequest(request);
+	}
+
+	override void EnableAiming(bool enable)
+	{
+		if (enable && KK_GarrisonHold.IsSprintMoveLocked(this))
+		{
+			m_bAimAtTarget = false;
+			return;
+		}
+
+		super.EnableAiming(enable);
 	}
 }
 
