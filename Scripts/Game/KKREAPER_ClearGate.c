@@ -1158,8 +1158,9 @@ modded class SCR_AICombatComponent
 }
 
 // The bound runner has to keep the sprint Koopky issued. Reaper aims that
-// step at the enemy, and the sprint becomes a sidestep. Lowering the rifle
-// again, or cancelling the look at the route, stops the step instead.
+// step at the enemy, and the sprint becomes a sidestep. The look stays on
+// the lane from the look node. This keeps the rifle down and the speed on
+// sprint.
 void KKREAPER_KeepBoundSprint(IEntity soldier)
 {
 	if (!KK_GarrisonHold.IsBoundSprint(soldier))
