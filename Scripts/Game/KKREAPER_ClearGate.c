@@ -1143,6 +1143,15 @@ modded class SCR_AICombatComponent
 
 		KK_HoldSprintEnemy(outCurrentTarget);
 
+		// Reaper puts the last-seen point back after Koopky clears it. That
+		// point is what keeps the rifle firing along the old direction
+		// once the building order has ended.
+		if (KK_GarrisonHold.IsFreshOrder(GetOwner()) && KK_DropStaleTarget())
+		{
+			outCurrentTarget = null;
+			outSelectedTargetChanged = false;
+		}
+
 		// A cover hold stands against something solid. This order's sight
 		// trace hits that cover. Keep a living target the normal attack
 		// can still see when Reaper's own pass does not.
@@ -1296,6 +1305,24 @@ modded class SCR_AIMoveIndividuallyBehavior
 			sprinting = sprinting || KK_GarrisonHold.IsBoundSprint(m_Utility.GetOwner());
 			planted = planted || KK_GarrisonHold.IsPinned(m_Utility.GetOwner());
 			recalled = recalled || KK_GarrisonHold.IsRecalled(m_Utility.GetOwner());
+		}
+
+		// A clear inside the building keeps the route score. Reaper scores
+		// this move on its own, and a lower score hands him to the attack.
+		// The attack plants him. The room gun still fires.
+		bool clearing =
+			KK_GarrisonHold.IsClearing(body) ||
+			(m_Utility && KK_GarrisonHold.IsClearing(m_Utility.GetOwner()));
+		if (
+			clearing &&
+			(
+				KK_GarrisonHold.OwnsShot(body) ||
+				(m_Utility && KK_GarrisonHold.OwnsShot(m_Utility.GetOwner()))
+			)
+		)
+		{
+			m_bUseCombatMove = false;
+			return vanilla.CustomEvaluate();
 		}
 
 		// Reaper raises this move into a strafe. The bound sprint is Koopky's.
@@ -1492,6 +1519,31 @@ modded class SCR_AILookAction
 	}
 }
 
+// Knowing a target is there, without a sight line, is enough for these to
+// walk him back. Reaper calls the base retreat directly, so Koopky's zero
+// never lands. A clear keeps the route.
+modded class SCR_AIRetreatFromTargetBehavior
+{
+	override float CustomEvaluate()
+	{
+		if (KK_GarrisonHold.ClearerPushing(m_Utility))
+			return 0;
+
+		return super.CustomEvaluate();
+	}
+}
+
+modded class SCR_AIRetreatWhileLookAtBehavior
+{
+	override float CustomEvaluate()
+	{
+		if (KK_GarrisonHold.ClearerPushing(m_Utility))
+			return 0;
+
+		return super.CustomEvaluate();
+	}
+}
+
 // The attack aims the bound, and the aimed step walks. Reaper scores
 // that attack without calling through, so the zero has to land here.
 modded class SCR_AIAttackBehavior
@@ -1510,17 +1562,30 @@ modded class SCR_AIAttackBehavior
 			return 0;
 		}
 
+		// Within range of the building, the route stays selected. Reaper's
+		// attack plants him, and the room gun fires without it. That step
+		// is a short standing strafe. Farther out, this attack still scores.
+		if (
+			(KK_GarrisonHold.IsClearing(m_Utility.m_OwnerEntity) && KK_GarrisonHold.OwnsShot(m_Utility.m_OwnerEntity)) ||
+			(KK_GarrisonHold.IsClearing(m_Utility.GetOwner()) && KK_GarrisonHold.OwnsShot(m_Utility.GetOwner()))
+		)
+		{
+			m_bUseCombatMove = false;
+			return 0;
+		}
+
 		return super.CustomEvaluate();
 	}
 }
 
-// Outermost, so Reaper cannot accept a combat move during the bound.
-// That request is the walk toward the enemy. The sprint is the order.
+// Outermost, so Reaper cannot accept a combat move during the bound or a
+// clear inside the building. That request is the walk toward the enemy.
+// The sprint, and the clear route, are the order.
 modded class SCR_AICombatMoveState
 {
 	override void ApplyNewRequest(notnull SCR_AICombatMoveRequestBase request)
 	{
-		if (KK_GarrisonHold.IsSprintMoveLocked(this))
+		if (KK_GarrisonHold.IsSprintMoveLocked(this) || KK_GarrisonHold.IsClearMoveLocked(this))
 		{
 			request.m_eState = SCR_EAICombatMoveRequestState.CANCELED;
 			if (m_Request && m_Request.m_eState == SCR_EAICombatMoveRequestState.EXECUTING)
@@ -1536,13 +1601,63 @@ modded class SCR_AICombatMoveState
 
 	override void EnableAiming(bool enable)
 	{
-		if (enable && KK_GarrisonHold.IsSprintMoveLocked(this))
+		if (
+			enable &&
+			(
+				KK_GarrisonHold.IsSprintMoveLocked(this) ||
+				KK_GarrisonHold.IsClearMoveLocked(this)
+			)
+		)
 		{
 			m_bAimAtTarget = false;
 			return;
 		}
 
 		super.EnableAiming(enable);
+	}
+}
+
+// A clear, an attack, or a room shot still wants the rifle up. A reload,
+// an empty gun, a bash, and a sprint are not in this, so those lowers still run.
+bool KKREAPER_RifleStaysUp(IEntity soldier, IEntity other)
+{
+	return KKREAPER_OneRifleStaysUp(soldier) || KKREAPER_OneRifleStaysUp(other);
+}
+
+bool KKREAPER_OneRifleStaysUp(IEntity soldier)
+{
+	return KK_GarrisonHold.ClearWeaponStaysUp(soldier) ||
+		KK_GarrisonHold.AttackWeaponStaysUp(soldier) ||
+		KK_GarrisonHold.CombatOwnsWeapon(soldier);
+}
+
+// Reaper drops the rifle whenever the fire tree has no shot. That drop is
+// the lower-and-raise, and the next raise cuts the step off. vanilla skips
+// the drop. super is Reaper, and the drop is in there.
+modded class SCR_AIUpdateTargetAttackData
+{
+	override int ResolveFireTree(
+		BaseTarget target,
+		bool visible,
+		bool weaponReady,
+		out float fireRate)
+	{
+		IEntity body;
+		if (m_CharacterControllerComponent)
+			body = m_CharacterControllerComponent.GetOwner();
+
+		IEntity utilityBody;
+		IEntity utilityOwner;
+		if (m_UtilityComponent)
+		{
+			utilityBody = m_UtilityComponent.m_OwnerEntity;
+			utilityOwner = m_UtilityComponent.GetOwner();
+		}
+
+		if (KKREAPER_RifleStaysUp(body, utilityBody) || KKREAPER_RifleStaysUp(utilityOwner, null))
+			return vanilla.ResolveFireTree(target, visible, weaponReady, fireRate);
+
+		return super.ResolveFireTree(target, visible, weaponReady, fireRate);
 	}
 }
 
