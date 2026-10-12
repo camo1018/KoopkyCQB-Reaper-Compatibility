@@ -56,6 +56,28 @@ class KKREAPER_ClearGate
 		return Affects(control.GetAIAgent());
 	}
 
+	// This soldier is on a clear or garrison, including the walk in and
+	// the moment before the group gate is up.
+	static bool HouseOwns(AIAgent agent)
+	{
+		if (!KK_GarrisonHold.UseRoomCombat())
+			return false;
+
+		if (KK_GarrisonHold.OrderOwnsBehavior(agent))
+			return true;
+
+		if (!agent)
+			return false;
+
+		return KK_GarrisonHold.OrderOwnsBehavior(agent.GetControlledEntity());
+	}
+
+	static bool HouseOwnsEntity(IEntity body)
+	{
+		return KK_GarrisonHold.UseRoomCombat() &&
+			KK_GarrisonHold.OrderOwnsBehavior(body);
+	}
+
 	static bool MoveLocked(AIAgent agent)
 	{
 		if (!agent)
@@ -458,6 +480,15 @@ modded class SCR_AICombatMoveLogic_Attack
 			return ENodeResult.RUNNING;
 		}
 
+		// The route is the move for the whole clear or garrison.
+		if (KKREAPER_ClearGate.HouseOwns(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			return ENodeResult.RUNNING;
+		}
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -488,6 +519,9 @@ modded class SCR_AICombatMoveLogic_Attack
 			return;
 
 		if (m_Utility && KKREAPER_ClearGate.MoveLocked(m_Utility.GetAIAgent()))
+			return;
+
+		if (KKREAPER_ClearGate.HouseOwnsEntity(m_MyEntity))
 			return;
 
 		if (KKREAPER_Clearing())
@@ -545,7 +579,7 @@ modded class SCR_AICalculateCoverQueryProps_CombatMove
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.MoveLocked(owner))
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.MoveLocked(owner))
 			return ENodeResult.FAIL;
 
 		if (KKREAPER_ClearGate.Affects(owner))
@@ -559,7 +593,7 @@ modded class SCR_AIFindCover
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.MoveLocked(owner))
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.MoveLocked(owner))
 			return ENodeResult.FAIL;
 
 		if (KKREAPER_ClearGate.Affects(owner))
@@ -573,7 +607,7 @@ modded class SCR_AIGetCoverParameters
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.MoveLocked(owner))
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.MoveLocked(owner))
 			return ENodeResult.FAIL;
 
 		if (KKREAPER_ClearGate.Affects(owner))
@@ -587,6 +621,9 @@ modded class SCR_AISetStance
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
+		if (KKREAPER_ClearGate.HouseOwns(owner))
+			return ENodeResult.SUCCESS;
+
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
@@ -598,8 +635,8 @@ modded class SCR_AIGetCombatMovementParameters
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.MoveLocked(owner))
-			return ENodeResult.FAIL;
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.MoveLocked(owner))
+			return vanilla.EOnTaskSimulate(owner, dt);
 
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
@@ -612,8 +649,8 @@ modded class SCR_AIGetCombatMoveRequestParameters_Move
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.MoveLocked(owner))
-			return ENodeResult.FAIL;
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.MoveLocked(owner))
+			return vanilla.EOnTaskSimulate(owner, dt);
 
 		if (KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
@@ -626,7 +663,7 @@ modded class SCR_AISwitchMagazine
 {
 	override ENodeResult EOnTaskSimulate(AIAgent owner, float dt)
 	{
-		if (KKREAPER_ClearGate.Affects(owner))
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.Affects(owner))
 			return vanilla.EOnTaskSimulate(owner, dt);
 
 		return super.EOnTaskSimulate(owner, dt);
@@ -637,7 +674,7 @@ modded class SCR_AIDecoWeaponUnobstructed
 {
 	override bool TestFunction(AIAgent owner)
 	{
-		if (KKREAPER_ClearGate.Affects(owner))
+		if (KKREAPER_ClearGate.HouseOwns(owner) || KKREAPER_ClearGate.Affects(owner))
 			return vanilla.TestFunction(owner);
 
 		return super.TestFunction(owner);
@@ -648,7 +685,13 @@ modded class REAPER_AI_DoorPassageWaitBehavior
 {
 	override float CustomEvaluate()
 	{
-		if (m_Utility && KKREAPER_ClearGate.Affects(m_Utility.GetAIAgent()))
+		if (
+			m_Utility &&
+			(
+				KKREAPER_ClearGate.HouseOwns(m_Utility.GetAIAgent()) ||
+				KKREAPER_ClearGate.Affects(m_Utility.GetAIAgent())
+			)
+		)
 		{
 			Complete();
 			return 0;
@@ -663,7 +706,10 @@ modded class SCR_AIGoalReaction_OpenNavlinkDoor
 {
 	override void PerformReaction(notnull SCR_AIUtilityComponent utility, SCR_AIMessageBase message)
 	{
-		if (KKREAPER_ClearGate.Affects(utility.GetAIAgent()))
+		if (
+			KKREAPER_ClearGate.HouseOwns(utility.GetAIAgent()) ||
+			KKREAPER_ClearGate.Affects(utility.GetAIAgent())
+		)
 		{
 			vanilla.PerformReaction(utility, message);
 			return;
@@ -687,7 +733,7 @@ modded class SCR_DoorUserAction
 				agent = control.GetAIAgent();
 		}
 
-		if (KKREAPER_ClearGate.Affects(agent))
+		if (KKREAPER_ClearGate.HouseOwns(agent) || KKREAPER_ClearGate.Affects(agent))
 		{
 			vanilla.PerformAction(pOwnerEntity, pUserEntity);
 			return;
@@ -702,6 +748,14 @@ modded class SCR_AIThrowGrenadeToBehavior
 	protected bool KKREAPER_Clearing()
 	{
 		return m_Utility && KKREAPER_ClearGate.Affects(m_Utility.GetAIAgent());
+	}
+
+	override float CustomEvaluate()
+	{
+		if (KKREAPER_Clearing() || (m_Utility && KKREAPER_ClearGate.HouseOwns(m_Utility.GetAIAgent())))
+			return 0;
+
+		return super.CustomEvaluate();
 	}
 
 	override void OnActionSelected()
@@ -1059,6 +1113,12 @@ modded class SCR_AICombatComponent
 	)
 	{
 		IEntity owner = GetOwner();
+		if (KKREAPER_ClearGate.HouseOwnsEntity(owner))
+		{
+			KK_WriteHousePerception(perceptionComp, threatSystem);
+			return;
+		}
+
 		if (!KKREAPER_ClearGate.AffectsEntity(owner))
 		{
 			super.UpdatePerceptionFactor(perceptionComp, threatSystem);
@@ -1115,6 +1175,19 @@ modded class SCR_AICombatComponent
 		out bool outRetreatTargetChanged,
 		out bool outCompartmentChanged)
 	{
+		if (KKREAPER_ClearGate.HouseOwnsEntity(GetOwner()))
+		{
+			KK_EvaluateHouseOrder(
+				outWeaponEvent,
+				outSelectedTargetChanged,
+				outPrevTarget,
+				outCurrentTarget,
+				outRetreatTargetChanged,
+				outCompartmentChanged
+			);
+			return;
+		}
+
 		super.EvaluateWeaponAndTarget(
 			outWeaponEvent,
 			outSelectedTargetChanged,
@@ -1307,19 +1380,16 @@ modded class SCR_AIMoveIndividuallyBehavior
 			recalled = recalled || KK_GarrisonHold.IsRecalled(m_Utility.GetOwner());
 		}
 
-		// A clear inside the building keeps the route score. Reaper scores
-		// this move on its own, and a lower score hands him to the attack.
-		// The attack plants him. The room gun still fires.
-		bool clearing =
-			KK_GarrisonHold.IsClearing(body) ||
-			(m_Utility && KK_GarrisonHold.IsClearing(m_Utility.GetOwner()));
-		if (
-			clearing &&
+		// The whole clear keeps the route score. Reaper drops a high move,
+		// and a player command is one, once someone is in sight. That drop
+		// is the shuffle, and it starts before the room gun owns the shot.
+		bool onHouse =
+			KK_GarrisonHold.UseRoomCombat() &&
 			(
-				KK_GarrisonHold.OwnsShot(body) ||
-				(m_Utility && KK_GarrisonHold.OwnsShot(m_Utility.GetOwner()))
-			)
-		)
+				KK_GarrisonHold.OrderOwnsBehavior(body) ||
+				(m_Utility && KK_GarrisonHold.OrderOwnsBehavior(m_Utility.GetOwner()))
+			);
+		if (onHouse)
 		{
 			m_bUseCombatMove = false;
 			return vanilla.CustomEvaluate();
@@ -1352,7 +1422,11 @@ modded class SCR_AICharacterSetMovementSpeed
 		if (owner)
 			body = owner.GetControlledEntity();
 
-		ENodeResult result = super.EOnTaskSimulate(owner, dt);
+		ENodeResult result;
+		if (KKREAPER_ClearGate.HouseOwns(owner))
+			result = vanilla.EOnTaskSimulate(owner, dt);
+		else
+			result = super.EOnTaskSimulate(owner, dt);
 
 		// Reaper writes RUN onto a combat step after the order. An aimed
 		// bound was coming out as a sidestep. Put the sprint back after
@@ -1402,6 +1476,14 @@ modded class SCR_AILookAction
 {
 	override void LookAt(vector pos, float priority, float duration = 0.8)
 	{
+		if (KKREAPER_LookOnHouse())
+		{
+			if (KK_GarrisonHold.IsPathLookWrite())
+				vanilla.LookAt(pos, priority, duration);
+
+			return;
+		}
+
 		// A look at the enemy, applied and then replaced by the lane, is
 		// the turn off the sprint and back. The lane is written by the
 		// look node. This call does not take it.
@@ -1421,6 +1503,9 @@ modded class SCR_AILookAction
 
 	override void LookAt(IEntity ent, float priority, float duration = 0.8)
 	{
+		if (KKREAPER_LookOnHouse())
+			return;
+
 		// Facing the enemy turns the sprint into a strafe.
 		if (KKREAPER_Sprinting() || KKREAPER_Recalled())
 			return;
@@ -1433,6 +1518,12 @@ modded class SCR_AILookAction
 	// what swings him off the lane and back.
 	override void Complete()
 	{
+		if (KKREAPER_LookOnHouse())
+		{
+			vanilla.Complete();
+			return;
+		}
+
 		if (KKREAPER_Sprinting() && m_fPriority >= SCR_AILookAction.PRIO_COMMANDER)
 			return;
 
@@ -1446,6 +1537,18 @@ modded class SCR_AILookAction
 		out bool outCancelLook,
 		out bool outRestartLook)
 	{
+		if (KKREAPER_LookOnHouse())
+		{
+			vanilla.MoveLookParametersToNode(
+				outCanLook,
+				outLookPos,
+				outLookDuration,
+				outCancelLook,
+				outRestartLook
+			);
+			return;
+		}
+
 		// Reaper's own look runs in this call and points him at the enemy.
 		// The next pass points him down the lane. That pair of writes is
 		// the head thrash. While he is sprinting, this node does not
@@ -1499,6 +1602,15 @@ modded class SCR_AILookAction
 	}
 
 	protected bool m_bKKLaneHeld;
+
+	protected bool KKREAPER_LookOnHouse()
+	{
+		if (!m_Utility)
+			return false;
+
+		return KKREAPER_ClearGate.HouseOwnsEntity(m_Utility.m_OwnerEntity) ||
+			KKREAPER_ClearGate.HouseOwnsEntity(m_Utility.GetOwner());
+	}
 
 	protected bool KKREAPER_Sprinting()
 	{
@@ -1562,12 +1674,15 @@ modded class SCR_AIAttackBehavior
 			return 0;
 		}
 
-		// Within range of the building, the route stays selected. Reaper's
-		// attack plants him, and the room gun fires without it. That step
-		// is a short standing strafe. Farther out, this attack still scores.
+		// The whole clear, including the walk in from a player command.
+		// That command is a high move, and Reaper turns it into a strafe
+		// as soon as someone is in sight, before the room gun owns the shot.
 		if (
-			(KK_GarrisonHold.IsClearing(m_Utility.m_OwnerEntity) && KK_GarrisonHold.OwnsShot(m_Utility.m_OwnerEntity)) ||
-			(KK_GarrisonHold.IsClearing(m_Utility.GetOwner()) && KK_GarrisonHold.OwnsShot(m_Utility.GetOwner()))
+			KK_GarrisonHold.UseRoomCombat() &&
+			(
+				KK_GarrisonHold.OrderOwnsBehavior(m_Utility.m_OwnerEntity) ||
+				KK_GarrisonHold.OrderOwnsBehavior(m_Utility.GetOwner())
+			)
 		)
 		{
 			m_bUseCombatMove = false;
@@ -1751,6 +1866,9 @@ modded class SCR_AISetWeaponRaised
 
 		if (KK_GarrisonHold.KeepClearWeaponRaised(soldier))
 			return ENodeResult.SUCCESS;
+
+		if (KKREAPER_ClearGate.HouseOwns(owner))
+			return vanilla.EOnTaskSimulate(owner, dt);
 
 		return super.EOnTaskSimulate(owner, dt);
 	}
