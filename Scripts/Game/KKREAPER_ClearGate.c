@@ -1758,8 +1758,8 @@ modded class SCR_AIUpdateTargetAttackData
 		out float fireRate)
 	{
 		IEntity body;
-		if (m_CharacterControllerComponent)
-			body = m_CharacterControllerComponent.GetOwner();
+		if (m_CharacterController)
+			body = m_CharacterController.GetOwner();
 
 		IEntity utilityBody;
 		IEntity utilityOwner;
