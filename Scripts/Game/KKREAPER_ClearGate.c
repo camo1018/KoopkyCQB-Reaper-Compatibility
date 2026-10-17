@@ -1067,9 +1067,10 @@ modded class KK_AttackActivity
 			KKREAPER_ClearGate.SetMoveLocked(m_Group, true);
 	}
 
-	// At the point, with "Take cover uses attack" on, each man is released
-	// when he gets there. Reaper runs for whoever is still on the point.
-	// A man walked back past the return distance is held on his own.
+	// At the point, a man is released once the attack has a target.
+	// Reaper runs for whoever is still on the point. A man walked back
+	// past the return distance is held on his own. Until that release,
+	// the order walks him into cover and Reaper stays off.
 	protected bool KKREAPER_FightYielded()
 	{
 		return ReleasedToFight();
