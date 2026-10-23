@@ -471,6 +471,17 @@ modded class SCR_AICombatMoveLogic_Attack
 			return ENodeResult.RUNNING;
 		}
 
+		// Advance and Bound leave Reaper on. The engage stop is only a
+		// speed cap, and Reaper would turn it into a strafe.
+		if (KK_GarrisonHold.IsEngageStopped(body) || KK_GarrisonHold.IsEngageStopped(owner))
+		{
+			if (m_State && m_State.IsExecutingRequest())
+				m_State.CancelRequest();
+
+			KKREAPER_HoldEngageStop(owner);
+			return ENodeResult.RUNNING;
+		}
+
 		if (KKREAPER_ClearGate.MoveLocked(owner))
 		{
 			if (m_State && m_State.IsExecutingRequest())
@@ -1325,6 +1336,47 @@ void KKREAPER_HoldPinned(IEntity soldier)
 	utility.m_CombatMoveState.m_bAimAtTarget = false;
 }
 
+// Attack engage stops him with a speed cap. Reaper still aims the move
+// that was just cancelled, and that aim turns the stop into a sidestep.
+// The attack step stays queued. Only the strafe is dropped.
+void KKREAPER_HoldEngageStop(IEntity soldier)
+{
+	if (!KK_GarrisonHold.IsEngageStopped(soldier) || KK_GarrisonHold.IsBoundSprint(soldier))
+		return;
+
+	IEntity body = soldier;
+	AIAgent agent = AIAgent.Cast(soldier);
+	if (agent)
+		body = agent.GetControlledEntity();
+
+	if (!body)
+		body = soldier;
+
+	CharacterControllerComponent controller = CharacterControllerComponent.Cast(
+		body.FindComponent(CharacterControllerComponent)
+	);
+	if (controller)
+		controller.OverrideMaxSpeed(0);
+
+	SCR_AIUtilityComponent utility = SCR_AIUtilityComponent.Cast(
+		body.FindComponent(SCR_AIUtilityComponent)
+	);
+	if (!utility && agent)
+	{
+		utility = SCR_AIUtilityComponent.Cast(
+			agent.FindComponent(SCR_AIUtilityComponent)
+		);
+	}
+
+	if (!utility || !utility.m_CombatMoveState)
+		return;
+
+	if (utility.m_CombatMoveState.IsExecutingRequest())
+		utility.m_CombatMoveState.CancelRequest();
+
+	utility.m_CombatMoveState.m_bAimAtTarget = false;
+}
+
 // A man walked back to the point keeps that run. Reaper is still on for
 // the others, and aiming this step at the enemy turns it into a sidestep.
 void KKREAPER_KeepRecall(IEntity soldier)
@@ -1441,11 +1493,16 @@ modded class SCR_AICharacterSetMovementSpeed
 		if (KK_GarrisonHold.IsRecalled(body) || KK_GarrisonHold.IsRecalled(owner))
 		{
 			KKREAPER_KeepRecall(body);
+			KKREAPER_HoldEngageStop(body);
+			KKREAPER_HoldEngageStop(owner);
 			return result;
 		}
 
 		if (KK_GarrisonHold.IsPinned(body) || KK_GarrisonHold.IsPinned(owner))
 			KKREAPER_HoldPinned(body);
+
+		KKREAPER_HoldEngageStop(body);
+		KKREAPER_HoldEngageStop(owner);
 
 		// This node is in the move that a take cover jog actually runs.
 		// The rifle-up node can belong to a tree Reaper no longer ticks.
@@ -1491,6 +1548,11 @@ modded class SCR_AILookAction
 		if (KKREAPER_Sprinting())
 			return;
 
+		// Attack engage already wrote its point. Reaper would replace it
+		// with its own enemy look and drop the skill offset.
+		if (KKREAPER_EngageLookHeld())
+			return;
+
 		// The walk back still needs a look along the route. Reaper would
 		// turn that look toward the enemy.
 		if (KKREAPER_Recalled())
@@ -1511,6 +1573,9 @@ modded class SCR_AILookAction
 		if (KKREAPER_Sprinting() || KKREAPER_Recalled())
 			return;
 
+		if (KKREAPER_EngageLookHeld())
+			return;
+
 		super.LookAt(ent, priority, duration);
 	}
 
@@ -1528,6 +1593,9 @@ modded class SCR_AILookAction
 		if (KKREAPER_Sprinting() && m_fPriority >= SCR_AILookAction.PRIO_COMMANDER)
 			return;
 
+		if (KKREAPER_EngageLookHeld())
+			return;
+
 		super.Complete();
 	}
 
@@ -1539,6 +1607,20 @@ modded class SCR_AILookAction
 		out bool outRestartLook)
 	{
 		if (KKREAPER_LookOnHouse())
+		{
+			vanilla.MoveLookParametersToNode(
+				outCanLook,
+				outLookPos,
+				outLookDuration,
+				outCancelLook,
+				outRestartLook
+			);
+			return;
+		}
+
+		// Reaper writes its own enemy look in this call. The engage point,
+		// skill offset included, is already on the action.
+		if (KKREAPER_EngageLookHeld())
 		{
 			vanilla.MoveLookParametersToNode(
 				outCanLook,
@@ -1603,6 +1685,16 @@ modded class SCR_AILookAction
 	}
 
 	protected bool m_bKKLaneHeld;
+
+	// Attack engage is aiming. A sprint keeps the lane instead.
+	protected bool KKREAPER_EngageLookHeld()
+	{
+		if (!m_Utility || KKREAPER_Sprinting())
+			return false;
+
+		return KK_GarrisonHold.PerceivedFireActive(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.PerceivedFireActive(m_Utility.GetOwner());
+	}
 
 	protected bool KKREAPER_LookOnHouse()
 	{
@@ -1690,7 +1782,17 @@ modded class SCR_AIAttackBehavior
 			return 0;
 		}
 
-		return super.CustomEvaluate();
+		float score = super.CustomEvaluate();
+
+		// Reaper calls the base attack directly, so Koopky's engage stop
+		// never clears the strafe. The attack can still shoot.
+		if (
+			KK_GarrisonHold.IsEngageStopped(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.IsEngageStopped(m_Utility.GetOwner())
+		)
+			m_bUseCombatMove = false;
+
+		return score;
 	}
 }
 
