@@ -1241,13 +1241,27 @@ modded class SCR_AICombatComponent
 		// trace hits that cover. Keep a living target the normal attack
 		// can still see when Reaper's own pass does not.
 		IEntity owner = GetOwner();
-		if (!owner || !KK_GarrisonHold.IsPinned(owner) || !KK_GarrisonHold.IsFreshOrder(owner))
+		if (owner && KK_GarrisonHold.IsPinned(owner) && KK_GarrisonHold.IsFreshOrder(owner))
+		{
+			if (m_SelectedTarget && KK_GarrisonHold.IsLivingTarget(m_SelectedTarget))
+				KK_GarrisonHold.EndFreshOrder(owner);
+		}
+
+		// Reaper writes its own aim after the pass above. Attack engage
+		// already has the point, and a second one is the head thrash.
+		KKREAPER_KeepEngageAim();
+	}
+
+	protected void KKREAPER_KeepEngageAim()
+	{
+		if (!KK_GarrisonHold.AttackEngageOwnsLook(GetOwner()))
 			return;
 
-		if (!m_SelectedTarget || !KK_GarrisonHold.IsLivingTarget(m_SelectedTarget))
+		vector engageAim;
+		if (!KK_GarrisonHold.GetEngageAim(GetOwner(), engageAim))
 			return;
 
-		KK_GarrisonHold.EndFreshOrder(owner);
+		m_SelectedTargetDestinationPos = engageAim;
 	}
 }
 
@@ -1629,6 +1643,13 @@ modded class SCR_AILookAction
 				outCancelLook,
 				outRestartLook
 			);
+			KKREAPER_HoldEngageLook(
+				outCanLook,
+				outLookPos,
+				outLookDuration,
+				outCancelLook,
+				outRestartLook
+			);
 			return;
 		}
 
@@ -1685,6 +1706,45 @@ modded class SCR_AILookAction
 	}
 
 	protected bool m_bKKLaneHeld;
+
+	override void Cancel()
+	{
+		if (KKREAPER_EngageLookHeld())
+			return;
+
+		super.Cancel();
+	}
+
+	// The node keeps reporting the engage point. A restart here is Reaper
+	// turning the head off that man and back on the next pass.
+	protected void KKREAPER_HoldEngageLook(
+		out bool outCanLook,
+		out vector outLookPos,
+		out float outLookDuration,
+		out bool outCancelLook,
+		out bool outRestartLook)
+	{
+		vector engageAim;
+		IEntity body;
+		if (m_Utility)
+			body = m_Utility.m_OwnerEntity;
+
+		bool haveAim = KK_GarrisonHold.GetEngageAim(body, engageAim);
+		if (!haveAim && m_Utility)
+			haveAim = KK_GarrisonHold.GetEngageAim(m_Utility.GetOwner(), engageAim);
+
+		if (!haveAim)
+			return;
+
+		outCanLook = true;
+		outLookPos = engageAim;
+		outLookDuration = 30;
+		outCancelLook = false;
+		outRestartLook = false;
+		m_vPosition = engageAim;
+		m_bCancelLook = false;
+		m_bRestartLook = false;
+	}
 
 	// Attack engage is aiming. A sprint keeps the lane instead.
 	protected bool KKREAPER_EngageLookHeld()
