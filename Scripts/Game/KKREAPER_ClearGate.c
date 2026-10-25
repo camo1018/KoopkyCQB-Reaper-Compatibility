@@ -1212,8 +1212,14 @@ modded class SCR_AICombatComponent
 		// Reaper selects the enemy again after Koopky clears him. That
 		// selection aims the bound, and the aimed bound will not sprint.
 		// The enemy he already had is kept, and put back when the sprint ends.
+		// A live engage keeps the man. Clearing him here turns the head
+		// onto the step and the next pass turns it back.
 		IEntity sprinting = GetOwner();
-		if (sprinting && KK_GarrisonHold.IsBoundSprint(sprinting))
+		if (
+			sprinting &&
+			KK_GarrisonHold.IsBoundSprint(sprinting) &&
+			!KK_GarrisonHold.EngageOwnsTurn(sprinting)
+		)
 		{
 			KK_GarrisonHold.RememberSprintEnemy(sprinting, m_SelectedTarget);
 			KK_ClearTarget();
@@ -1272,6 +1278,11 @@ modded class SCR_AICombatComponent
 void KKREAPER_KeepBoundSprint(IEntity soldier)
 {
 	if (!KK_GarrisonHold.IsBoundSprint(soldier))
+		return;
+
+	// Engage owns the head and the rifle. Forcing the sprint here lowers
+	// the weapon and the next engage pass raises it again.
+	if (KK_GarrisonHold.EngageOwnsTurn(soldier))
 		return;
 
 	IEntity body = soldier;
@@ -1749,7 +1760,16 @@ modded class SCR_AILookAction
 	// Attack engage is aiming. A sprint keeps the lane instead.
 	protected bool KKREAPER_EngageLookHeld()
 	{
-		if (!m_Utility || KKREAPER_Sprinting())
+		if (!m_Utility)
+			return false;
+
+		if (
+			KK_GarrisonHold.EngageOwnsTurn(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.EngageOwnsTurn(m_Utility.GetOwner())
+		)
+			return true;
+
+		if (KKREAPER_Sprinting())
 			return false;
 
 		return KK_GarrisonHold.PerceivedFireActive(m_Utility.m_OwnerEntity) ||
