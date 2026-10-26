@@ -1578,6 +1578,17 @@ modded class SCR_AILookAction
 		if (KKREAPER_EngageLookHeld())
 			return;
 
+		// Between plants the advance step owns the head. An enemy look
+		// here is turned back by that step on the next pass.
+		if (KKREAPER_StepOwnsLook())
+		{
+			if (priority >= 50)
+				return;
+
+			vanilla.LookAt(pos, priority, duration);
+			return;
+		}
+
 		// The walk back still needs a look along the route. Reaper would
 		// turn that look toward the enemy.
 		if (KKREAPER_Recalled())
@@ -1598,7 +1609,7 @@ modded class SCR_AILookAction
 		if (KKREAPER_Sprinting() || KKREAPER_Recalled())
 			return;
 
-		if (KKREAPER_EngageLookHeld())
+		if (KKREAPER_EngageLookHeld() || KKREAPER_StepOwnsLook())
 			return;
 
 		super.LookAt(ent, priority, duration);
@@ -1618,7 +1629,7 @@ modded class SCR_AILookAction
 		if (KKREAPER_Sprinting() && m_fPriority >= SCR_AILookAction.PRIO_COMMANDER)
 			return;
 
-		if (KKREAPER_EngageLookHeld())
+		if (KKREAPER_EngageLookHeld() || KKREAPER_StepOwnsLook())
 			return;
 
 		super.Complete();
@@ -1706,6 +1717,21 @@ modded class SCR_AILookAction
 			return;
 		}
 
+		// The step already wrote its point. Reaper's look in this call is
+		// the enemy, and the next pass puts the step back.
+		if (KKREAPER_StepOwnsLook())
+		{
+			m_bKKLaneHeld = false;
+			vanilla.MoveLookParametersToNode(
+				outCanLook,
+				outLookPos,
+				outLookDuration,
+				outCancelLook,
+				outRestartLook
+			);
+			return;
+		}
+
 		m_bKKLaneHeld = false;
 		super.MoveLookParametersToNode(
 			outCanLook,
@@ -1722,6 +1748,18 @@ modded class SCR_AILookAction
 	{
 		if (KKREAPER_EngageLookHeld())
 			return;
+
+		// The plant look has to come off so the step can take the head.
+		// A step look that is already on him stays. Cancelling it is what
+		// lets Reaper aim at the man for one pass.
+		if (KKREAPER_StepOwnsLook())
+		{
+			if (m_fPriority < 50 && m_vPosition != vector.Zero)
+				return;
+
+			vanilla.Cancel();
+			return;
+		}
 
 		super.Cancel();
 	}
@@ -1774,6 +1812,20 @@ modded class SCR_AILookAction
 
 		return KK_GarrisonHold.PerceivedFireActive(m_Utility.m_OwnerEntity) ||
 			KK_GarrisonHold.PerceivedFireActive(m_Utility.GetOwner());
+	}
+
+	// Advance between plants. The plant and a live shot keep the engage
+	// point. A bound sprint keeps the lane in the sprint path.
+	protected bool KKREAPER_StepOwnsLook()
+	{
+		if (!m_Utility || KKREAPER_Sprinting() || KKREAPER_Recalled())
+			return false;
+
+		if (KKREAPER_EngageLookHeld())
+			return false;
+
+		return KK_GarrisonHold.AttackEngageOwnsLook(m_Utility.m_OwnerEntity) ||
+			KK_GarrisonHold.AttackEngageOwnsLook(m_Utility.GetOwner());
 	}
 
 	protected bool KKREAPER_LookOnHouse()
